@@ -54,7 +54,10 @@ static void signal_handler(int signal) {
 void* timestamp_thread_func(void* arg) {
     (void)arg;
     while (!caught_sig) {
-        sleep(10);
+        // Sleep in 100ms increments (total 10 seconds = 100 * 100ms)
+        for (int i = 0; i < 100 && !caught_sig; i++) {
+            usleep(100000); // 100,000 microseconds = 100ms
+        }
         if (caught_sig) break;
 
         time_t rawtime;
@@ -66,11 +69,16 @@ void* timestamp_thread_func(void* arg) {
         
         // Format: timestamp:time\n (RFC 2822 compliant strftime)
         size_t len = strftime(time_str, sizeof(time_str), "timestamp:%a, %d %b %Y %H:%M:%S %z\n", info);
+        if( len == 0 ) {
+            syslog(LOG_ERR, "strftime failed");
+            continue;
+        }
 
         pthread_mutex_lock(&file_mutex);
         FILE *fp = fopen(DATA_FILE, "a");
         if (fp != NULL) {
             fputs(time_str, fp);
+            fflush(fp);
             fclose(fp);
         }
         pthread_mutex_unlock(&file_mutex);
