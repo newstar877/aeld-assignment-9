@@ -1,6 +1,7 @@
 # Default compiler and flags
 CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Wextra -Werror -g
+CFLAGS += -I$(shell pwd)/../aesd-char-driver
 LDFLAGS ?= -pthread -lrt
 
 TARGET = aesdsocket

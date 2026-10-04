@@ -157,12 +157,111 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    loff_t total_size = 0;
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+    loff_t retval;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    /* Calculate total byte size of all valid entries in the circular buffer */
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->circular_buffer, index) {
+        if (entry->buffptr != NULL) {
+            total_size += entry->size;
+        }
+    }
+
+    /* Use kernel helper to calculate and validate the new offset */
+    retval = fixed_size_llseek(filp, offset, whence, total_size);
+
+    mutex_unlock(&dev->lock);
+    return retval;
+}
+
+long aesd_adjust_file_offset(struct file *filp, uint32_t write_cmd, uint32_t write_cmd_offset)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry;
+    uint8_t index;
+    loff_t new_fpos = 0;
+    uint8_t valid_entries = 0;
+    int i;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    /* 1. Count valid entries in circular buffer */
+    if (dev->circular_buffer.full) {
+        valid_entries = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    } else if (dev->circular_buffer.in_offs >= dev->circular_buffer.out_offs) {
+        valid_entries = dev->circular_buffer.in_offs - dev->circular_buffer.out_offs;
+    } else {
+        valid_entries = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - (dev->circular_buffer.out_offs - dev->circular_buffer.in_offs);
+    }
+
+    if (write_cmd >= valid_entries) {
+        mutex_unlock(&dev->lock);
+        PDEBUG("Invalid write_cmd %u, valid entries %u", write_cmd, valid_entries);
+        return -EINVAL;
+    }
+
+    /* 2. Validate write_cmd index */
+    if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+        mutex_unlock(&dev->lock);
+        PDEBUG("Invalid write_cmd %u, valid entries %u", write_cmd, valid_entries);
+        return -EINVAL;
+    }
+
+    /* 3. Validate write_cmd_offset within the targeted entry */
+    index = (dev->circular_buffer.out_offs + write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    if (write_cmd_offset >= dev->circular_buffer.entry[index].size) {
+        mutex_unlock(&dev->lock);
+        PDEBUG("Invalid write_cmd_offset %u for entry size %zu", write_cmd_offset, dev->circular_buffer.entry[index].size);
+        return -EINVAL;
+    }
+
+    /* 4. Calculate absolute byte position (sum lengths of preceding entries) */
+    for (i = 0; i < write_cmd; i++) {
+        uint8_t pos = (dev->circular_buffer.out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        new_fpos += dev->circular_buffer.entry[pos].size;
+    }
+    new_fpos += write_cmd_offset;
+
+    /* 5. Update file position */
+    filp->f_pos = new_fpos;
+    PDEBUG("ioctl updated filp->f_pos to %lld", filp->f_pos);
+
+    mutex_unlock(&dev->lock);
+    return 0;
+}
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_seekto seekto;
+
+    if (cmd != AESDCHAR_IOCSEEKTO)
+        return -ENOTTY;
+
+    if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)))
+        return -EFAULT;
+
+    PDEBUG("ioctl received with offset %u", seekto.write_cmd_offset);
+
+    return aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)

@@ -10,11 +10,14 @@
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/printk.h>
 #else
 #include <string.h>
 #endif
 
 #include "aesd-circular-buffer.h"
+
+#define PDEBUG(fmt, args...) printk( KERN_DEBUG "aesdchar: " fmt, ## args)
 
 /**
  * @param buffer the buffer to search for corresponding offset.  Any necessary locking must be performed by caller.
@@ -39,6 +42,9 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 
     index = buffer->out_offs;
     count = 0;
+
+    PDEBUG("find_entry: fpos=%zu, index=%u, entry_size=%zu\n", 
+       char_offset, index, entry ? entry->size : 0);
 
     // Iterate through filled entries
     while (count < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
@@ -70,6 +76,7 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
+    
     if (buffer == NULL || add_entry == NULL) {
         return;
     }
@@ -77,12 +84,13 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     // Insert at current in_offs position
     buffer->entry[buffer->in_offs] = *add_entry;
 
-    // If buffer was full, advance out_offs
-    if(buffer->full) {
-        buffer->out_offs = (buffer->in_offs + 1) & AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
-    }
+    // Advance write offset
+    buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 
-    if (buffer->in_offs == buffer->out_offs) {
+    // Update full flag logic...
+    if (buffer->full) {
+        buffer->out_offs = buffer->in_offs;
+    } else if (buffer->in_offs == buffer->out_offs) {
         buffer->full = true;
     }
 }

@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
@@ -12,10 +13,20 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/queue.h>
+#include "aesd_ioctl.h"
 
 #define PORT 9000
-#define DATA_FILE "/var/tmp/aesdsocketdata"
 #define BUFFER_SIZE 1024
+
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+#define DATA_FILE "/dev/aesdchar"
+#else
+#define DATA_FILE "/var/tmp/aesdsocketdata"
+#endif
 
 /* Fallback macro for glibc sys/queue.h if SLIST_FOREACH_SAFE is missing */
 #ifndef SLIST_FOREACH_SAFE
@@ -86,36 +97,83 @@ void* timestamp_thread_func(void* arg) {
     return NULL;
 }
 
+// process ioctl command to adjust file offset
+static int handle_ioctl_command(FILE *fp, const char *packet_buf)
+{
+    struct aesd_seekto seekto;
+
+    if (sscanf(packet_buf, "AESDCHAR_IOCSEEKTO:%u,%u", 
+               &seekto.write_cmd, &seekto.write_cmd_offset) != 2) {
+        syslog(LOG_ERR, "Malformed IOCSEEKTO command: %s", packet_buf);
+        return -1;
+    }
+
+    /* Extract integer file descriptor from stdio FILE pointer */
+    int fd = fileno(fp);
+    if (fd < 0) {
+        syslog(LOG_ERR, "Invalid file descriptor from FILE pointer");
+        return -1;
+    }
+
+    /* Execute driver ioctl on the exact same open handle */
+    if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) != 0) {
+        syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %m");
+        return -1;
+    }
+
+    return 0;
+}
+
 // Thread function handling individual client connection sockets
 void* worker_thread_func(void* arg) {
     struct thread_node *node = (struct thread_node*)arg;
     char buffer[BUFFER_SIZE];
-    ssize_t bytes_read;
+    ssize_t bytes_received, bytes_read;
+    const char *seek_prefix = "AESDCHAR_IOCSEEKTO:";
 
-    // Receive data packet and append to file under mutex lock
-    pthread_mutex_lock(&file_mutex);
-    FILE *fp = fopen(DATA_FILE, "a+");
-    if (fp != NULL) {
-        while ((bytes_read = recv(node->client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-            buffer[bytes_read] = '\0';
-            fputs(buffer, fp);
-            if (strchr(buffer, '\n') != NULL) {
-                break; // End of packet
+    /* Open device ONCE for both write/ioctl AND read-back */
+    int dev_fd = open(DATA_FILE, O_RDWR | O_CREAT, 0666);
+
+    if (dev_fd < 0) {
+        syslog(LOG_ERR, "Failed to open %s: %m", DATA_FILE);
+        close(node->client_fd);
+        node->completed = 1;
+        return NULL;
+    }
+
+    /* Receive data packet from socket */
+    while ((bytes_received = recv(node->client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+
+            pthread_mutex_lock(&file_mutex);            
+
+            if (strncmp(buffer, seek_prefix, strlen(seek_prefix)) == 0) {
+                /* Handle ioctl command: parse and execute ioctl on dev_fd.*/                
+                struct aesd_seekto seekto;
+                if (sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u", 
+                        &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+                    if (ioctl(dev_fd, AESDCHAR_IOCSEEKTO, &seekto) != 0) {
+                        syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %m");
+                    }
+                }
+            } else {
+                /* Regular data packet: write to driver */
+                write(dev_fd, buffer, bytes_received);
+                /* For normal writes, seek back to start so read-back streams whole file */
+                lseek(dev_fd, 0, SEEK_SET);
             }
-        }
-        fclose(fp);
-    }
-    
-    // Read whole file contents and echo back to client
-    fp = fopen(DATA_FILE, "r");
-    if (fp != NULL) {
-        while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
-            send(node->client_fd, buffer, bytes_read, 0);
-        }
-        fclose(fp);
-    }
-    pthread_mutex_unlock(&file_mutex);
 
+            /* Read back content from dev_fd starting from current f_pos and stream to socket */
+            while ((bytes_read = read(dev_fd, buffer, sizeof(buffer))) > 0) {
+                send(node->client_fd, buffer, bytes_read, 0);
+            }            
+        } 
+
+        pthread_mutex_unlock(&file_mutex);
+    }
+
+    close(dev_fd);
     close(node->client_fd);
     node->completed = 1;
     return NULL;
@@ -165,8 +223,9 @@ int main(int argc, char *argv[]) {
 
     // Spawn 10-second timer thread
     pthread_t timer_tid;
+#ifndef USE_AESD_CHAR_DEVICE
     pthread_create(&timer_tid, NULL, timestamp_thread_func, NULL);
-
+#endif
     // Accept loop
     while (!caught_sig) {
         struct sockaddr_in client_addr;
