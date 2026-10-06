@@ -1,5 +1,5 @@
-# aesd-assignments
-This repo contains public starter source code, scripts, and documentation for Advanced Embedded Software Development (ECEN-5713) and Advanced Embedded Linux Development assignments University of Colorado, Boulder.
+# aesd-assignment-9
+This repo contains public starter source code, scripts, and documentation for Advanced Embedded Software Development (ECEN-5713) and Advanced Embedded Linux Development assignments University of Colorado, Boulder. In addition it contains the completed code for assignment-9, the kernel char driver and related socket application.
 
 ## Setting Up Git
 
@@ -11,18 +11,53 @@ See instructions in [Setting-up-SSH-Access-To-your-Repo](https://github.com/cu-e
 
 ## Specific Assignment Instructions
 
-Some assignments require further setup to pull in example code or make other changes to your repository before starting.  In this case, see the github classroom assignment start instructions linked from the assignment document for details about how to use this repository.
+The specific tasks for this assignment can be found in the end of project exercise, Assignment 9 Instructions, after Module 4 of the Coursera course.
 
 ## Testing
 
-The basis of the automated test implementation for this repository comes from [https://github.com/cu-ecen-aeld/assignment-autotest/](https://github.com/cu-ecen-aeld/assignment-autotest/)
+The following are the test results from the two test scripts that check the driver & socket app implementation respectively:
 
-The assignment-autotest directory contains scripts useful for automated testing  Use
+drivertest:
+```text
+aesdchar_load
+Local file aesdchar.ko not found, attempting to modprobe
+[   71.364967] aesdchar: loading out-of-tree module taints kernel.
+root@qemuarm64:/usr/bin/assignment-autotest/test/assignment9-yocto# aesdsocket -d
+root@qemuarm64:/usr/bin/assignment-autotest/test/assignment9-yocto# ./drivertest.sh 
+The output below should show write 1 with first 2 bytes missing
+ite1
+write2
+write3
+write4
+write5
+write6
+write7
+write8
+write9
+write10
+The output below should show the 9 from write 9 followed by write10 only
+9
+write10
 ```
-git submodule update --init --recursive
+sockettest:
+```text
+./sockettest.sh 
+Testing target localhost on port 9000
+Sending ioc seekto command for offset 0,2
+rite1
+swrite2
+swrite3
+swrite4
+swrite5
+swrite6
+swrite7
+swrite8
+swrite9
+swrite10
+Sending ioc seekto command for offset 8,6
+9
+swrite10
+Test passed
 ```
-to synchronize after cloning and before starting each assignment, as discussed in the assignment instructions.
 
-As a part of the assignment instructions, you will setup your assignment repo to perform automated testing using github actions.  See [this page](https://github.com/cu-ecen-aeld/aesd-assignments/wiki/Setting-up-Github-Actions) for details.
 
-Note that the unit tests will fail on this repository, since assignments are not yet implemented.  That's your job :) 
