@@ -16,8 +16,12 @@
 #endif
 
 #include "aesd-circular-buffer.h"
-
-#define PDEBUG(fmt, args...) printk( KERN_DEBUG "aesdchar: " fmt, ## args)
+#ifdef __KERNEL__
+#define PDEBUG(fmt, args...) printk( KERN_DEBUG "aesd-circular-buffer: " fmt, ## args)
+#else
+#include <stdio.h>
+#define PDEBUG(fmt, args...) printf("aesd-circular-buffer: " fmt, ## args)
+#endif
 
 /**
  * @param buffer the buffer to search for corresponding offset.  Any necessary locking must be performed by caller.
@@ -43,8 +47,8 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
     index = buffer->out_offs;
     count = 0;
 
-    PDEBUG("find_entry: fpos=%zu, index=%u, entry_size=%zu\n", 
-       char_offset, index, entry ? entry->size : 0);
+    PDEBUG("find_entry: fpos=%zu, index=%u\n", 
+       char_offset, index);
 
     // Iterate through filled entries
     while (count < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
